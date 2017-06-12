@@ -21,6 +21,7 @@ parser.add_argument('-t', '--token', help='ESPSky device token', required=True)
 
 
 args = parser.parse_args()
+mqtt_answer = False
 
 
 def _pad(s):
@@ -37,10 +38,26 @@ def content_signature(content):
     return base64.b64encode(hashlib.sha512(content).digest())
 
 
+def mqtt_on_connect(client, userdata, rc):
+    client.subscribe('/%s/system/response' % device_token_hash(), 0)
+
+
+def mqtt_on_message(mqttc, userdata, message):
+    global mqtt_answer
+    json_raw = decode_message(str(message.payload))
+    mqtt_answer = json.loads(json_raw)
+    # mqttc.loop_stop()
+    # print 'Received message:' + json_raw
+    # print mqtt_answer
+
+
 def mqtt_connect():
     client = mqtt.Client()
+    client.on_connect = mqtt_on_connect
+    client.on_message = mqtt_on_message
     if args.mqtt_user and args.mqtt_password:
         client.username_pw_set(args.mqtt_user, args.mqtt_password)
+
     client.connect(args.mqtt_host, 1883, 60)
     return client
 
@@ -53,11 +70,38 @@ def encode_message(content):
     return cipher.encrypt(aligned)
 
 
+def decode_message(content):
+    key = args.token[0:16]
+    iv = 16 * '\x00'
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return cipher.decrypt(content).split(b'\0', 1)[0]
+
+
+def mqtt_wait_for(mqttc, response, timeout=5):
+    global mqtt_answer
+    mqtt_answer = False
+    time_start = time.time()
+    waiting = True
+    mqttc.loop_start()
+
+    while waiting:
+        if time.time() - time_start > timeout:
+            waiting = False
+        if mqtt_answer and mqtt_answer['response'] == response:
+            waiting = False
+
+    return mqtt_answer
+
+
 def mqtt_command(mqttc, command, command_args, body=''):
     json_obj = {'command': command, 'args': command_args}
     json_raw = json.dumps(json_obj)
     mqttc.publish('/%s/system/command' % device_token_hash(), bytearray(encode_message(json_raw)))
-    return False
+    answer = mqtt_wait_for(mqttc, 'system/file/download/complete')
+    if answer and answer['result']:
+        print 'file download success'
+    else:
+        print 'file download failed'
 
 
 def download(file_url):
