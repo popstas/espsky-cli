@@ -8,10 +8,14 @@ import json
 import hashlib
 import os
 import requests
+import SimpleHTTPServer
+import SocketServer
 import StringIO
 import sys
 import paho.mqtt.client as mqtt
+import socket
 import time
+import threading
 
 parser = argparse.ArgumentParser(description='espsky-cli')
 parser.add_argument('command', help='Command')
@@ -97,18 +101,23 @@ def mqtt_command(mqttc, command, command_args, body=''):
     json_obj = {'command': command, 'args': command_args}
     json_raw = json.dumps(json_obj)
     mqttc.publish('/%s/system/command' % device_token_hash(), bytearray(encode_message(json_raw)))
-    answer = mqtt_wait_for(mqttc, 'system/file/download/complete')
-    if answer and answer['result']:
-        print 'file download success'
-    else:
-        print 'file download failed'
 
 
 def download(file_url):
-    r = requests.get(file_url)
-    file_content = r.text
-    file_signature = content_signature(file_content)
     filename = os.path.basename(file_url)
+    is_file = os.path.isfile(file_url)
+    if is_file:
+        with open(file_url, 'r') as f:
+            file_content = f.read()
+        base_path = os.path.dirname(os.path.realpath(file_url))
+        httpd = http_server_start(8084, base_path)
+        hostname = socket.gethostname()
+        file_url = 'http://%s:8084/%s' % (hostname, filename)
+    else:
+        r = requests.get(file_url)
+        file_content = r.text
+
+    file_signature = content_signature(file_content)
     if args.filename:
         filename = args.filename
 
@@ -116,6 +125,29 @@ def download(file_url):
     command_args = {'name': filename, 'url': file_url, 'signature': file_signature}
 
     mqtt_command(mqttc, 'system/file/download', command_args, file_content)
+
+    answer = mqtt_wait_for(mqttc, 'system/file/download/complete')
+    if answer and answer['result']:
+        print 'file download success'
+    else:
+        print 'file download failed'
+
+    if is_file:
+        http_server_stop(httpd)
+
+
+def http_server_start(port, base_path):
+    handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+    httpd = SocketServer.ThreadingTCPServer(("", port), handler)
+    server_thread = threading.Thread(target=httpd.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+    return httpd
+
+
+def http_server_stop(httpd):
+    httpd.shutdown()
+    httpd.server_close()
 
 
 def restart():

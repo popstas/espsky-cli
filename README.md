@@ -23,5 +23,6 @@ espsky.py --token token_from_espsky.com reset
 
 ### Upload file:
 ```
-espsky.py upload file.lua
+espsky.py download http://hostname/file.lua
+espsky.py download /path/to/file.lua
 ```
